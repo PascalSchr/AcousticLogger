@@ -1,5 +1,6 @@
 #include <SdFat.h>
 #include <TimeLib.h>
+#include <inttypes.h>
 
 
 
@@ -47,12 +48,14 @@ inline uint16_t FASTRUN extractBits(uint32_t raw){
 // -- SD --
 SdFs sd;
 FsFile file;
+FsFile nextfile;
+FsFile oldfile;
 char filename[100] = "";
 
 
 // ------------------------------------------
 // -- Buffers --
-const uint32_t SAMPLES_PER_BUFFER = 4096;
+const uint32_t SAMPLES_PER_BUFFER = 8192;
 const uint32_t BUF_BYTES = SAMPLES_PER_BUFFER * 2 * sizeof(uint16_t);
 const int dataPins[16] = {19,18,14,15,40,41,17,16,22,23,20,21,38,39,26,27};
 
@@ -60,7 +63,6 @@ const int dataPins[16] = {19,18,14,15,40,41,17,16,22,23,20,21,38,39,26,27};
 DMAMEM uint16_t buf[2][SAMPLES_PER_BUFFER * 2];
 
 uint32_t swapTime = 0;
-uint32_t fileTimeLength = 60*1000*1;   //10 minutes
 
 volatile uint8_t writeBuf = 0;
 volatile uint32_t bufPos = 0;
@@ -68,6 +70,9 @@ volatile bool flushReady = false;
 volatile bool overrun = false;
 volatile uint32_t buffcounter = 0;
 volatile bool changefile=false;
+volatile bool nextfileready=false;
+volatile bool preparefile=false;
+volatile bool closefile=false;
 
 volatile uint32_t sampleCounter    = 0;    // current sample index
 volatile uint16_t fileCounter = 0;
@@ -78,9 +83,11 @@ volatile uint16_t fileCounter = 0;
 // -- stats --
 uint32_t totalSamples = 0;
 uint32_t lastStatsTime = 0;  
+uint32_t programstarttime = 0;
 uint32_t filestarttime = 0;
 uint32_t runtime = 0;
-
+bool one_time = false;
+uint32_t loopstart=0;
 
 // ------------------------------------------
 // -- sample rate --
@@ -135,9 +142,27 @@ void FASTRUN sampleISR() {
           buffcounter=0;
           changefile=true;
         }
+        if (buffcounter ==70){
+          preparefile=true;
+        }
+        if (buffcounter ==120){
+          closefile=true;
+        }
     }
 }
 
+void prepareNewFile(){
+  uint32_t now = millis();
+  nextfile = sd.open("_preparationfile.bin", O_WRITE | O_CREAT | O_TRUNC);
+  //nextfile.preAllocate(150*8192*4);
+  nextfileready=true;
+  file.rename(filename);
+  Serial.println("file prepared_____________");
+  uint32_t later = millis();
+  Serial.println("_____________");
+  Serial.println(later-now);
+  Serial.println("_____________");
+}
 
 void enterRegisterMode() {
     IMXRT_GPIO6.GDIR |= GPIO6_DATA_MASK;
@@ -157,11 +182,6 @@ void enterRegisterMode() {
     delayMicroseconds(1);
 }
 
-
-
-
-
-
 void exitRegisterMode() {
 
     IMXRT_GPIO6.GDIR |= GPIO6_DATA_MASK;
@@ -169,7 +189,7 @@ void exitRegisterMode() {
     // Now clear all DB pins — this actually drives zeros onto the bus
     IMXRT_GPIO6.DR &= ~GPIO6_DATA_MASK;
 
-    Serial.println(IMXRT_GPIO6.DR,BIN);
+    //Serial.println(IMXRT_GPIO6.DR,BIN);
     delayNanoseconds(25);
 
     digitalWriteFast(PIN_CS, LOW);
@@ -279,10 +299,10 @@ void setup(){
   digitalWriteFast(PIN_WR, HIGH);
 
   // -- set register as GPIO6 (fast GPIO) --
-  Serial.printf("GPR26 before: 0x%08X\n", IOMUXC_GPR_GPR26);
+  //Serial.printf("GPR26 before: 0x%08X\n", IOMUXC_GPR_GPR26);
   IOMUXC_GPR_GPR26 |= GPIO6_DATA_MASK;
   IOMUXC_GPR_GPR26 &= GPIO6_DATA_MASK;
-  Serial.printf("GPR26 after:  0x%08X\n", IOMUXC_GPR_GPR26);  //https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf teensy documentation, 11.3.27 GPR26 
+  //Serial.printf("GPR26 after:  0x%08X\n", IOMUXC_GPR_GPR26);  //https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf teensy documentation, 11.3.27 GPR26 
   
   readRegister(0x07);
 
@@ -314,8 +334,6 @@ void setup(){
   IMXRT_GPIO6.GDIR &= (~GPIO6_DATA_MASK); //& bitwise and, ~ invert, 0:input(default), 1:output
 
 
-  // -- reset ADC --
-
   // -- initialize SD card --
   if (!sd.begin(SdioConfig(FIFO_SDIO))){
     Serial.println("SD init failed!"); 
@@ -326,9 +344,10 @@ void setup(){
       delay(1000); 
     }
   }
-  sprintf(filename, "File_%d-%d_%d-%d-%d.bin", month(),day(),hour(),minute(),second()); //filename example File_1-1_10-30-45.bin
-  file = sd.open(filename, O_WRITE | O_CREAT | O_TRUNC);
   
+  file = sd.open("_first_preparationfile.bin", O_WRITE | O_CREAT | O_TRUNC);
+  file.preAllocate(uint64_t (150*8192*4));
+  oldfile = sd.open("_burnfile.bin", O_WRITE | O_CREAT | O_TRUNC);
   if (!file){
     Serial.println("File open failed!"); 
     while(1){            
@@ -338,12 +357,11 @@ void setup(){
       delay(1000); 
     }
   }
-  file.preAllocate(uint64_t (10*200000*4));
   Serial.println("Starting...");
-  filestarttime = now();
-  runtime = now();
+  programstarttime=micros();
+  sampleTimer.priority(0);          //
   sampleTimer.begin(sampleISR, SAMPLE_INTERVAL_US);   //ISR starting for polling the ADC
-  sampleTimer.priority(0);          // ← just add this line
+  sprintf(filename, "File_%d-%d_%d-%d-%d_%"PRIu32".bin", month(),day(),hour(),minute(),second(), micros()-programstarttime);
 }
 
 
@@ -352,6 +370,10 @@ void setup(){
 // -- Main Loop --
 
 void loop(){
+  if (!one_time){
+    one_time=true;
+    loopstart = micros();
+  }
   if (overrun){
     Serial.println("OVERRUN - SD write too slow!");
     overrun = false;
@@ -365,23 +387,32 @@ void loop(){
     Serial.println(buffcounter);
   }
 
+  if (preparefile && !flushReady){
+    preparefile=false;
+    prepareNewFile();
+  }
 
-  /*
-  if (now - lastStatsTime>3000){
-    float khz = totalSamples / 3000.0f;
-    Serial.printf("Logging rate: %.2f kHz  buf0[0]=%d buf1[0]=%d\n", khz, (int16_t)buf[0][0], (int16_t)buf[1][0]);
-    totalSamples = 0;
-    lastStatsTime = now;
-  }*/
+  if (closefile && !flushReady){
+    uint32_t now = micros();
+    closefile=false;
+    oldfile.close();
+    Serial.println("file closed");
+    uint32_t later = micros();
+    Serial.println("_____________");
+    Serial.println(later-now);
+    Serial.println("_____________");
+  }
 
 
 
-  if (changefile) {
+  if (changefile && !flushReady) {
     changefile=false;
     fileCounter++;
     if (fileCounter>2)  {
         Serial.println("all files full!");
-        Serial.print("finished...");
+        Serial.println("finished...");
+        Serial.println("time diff setup - loop:");
+        Serial.println(loopstart-programstarttime);
         file.close();
         while(1){
             digitalWrite(ledPin, HIGH);   // set the LED on
@@ -390,20 +421,14 @@ void loop(){
             delay(500);   
         }
     }
-    /*Serial.println("file full! ...new file...");
-    /*file.truncate();
-    file.sync();*/
-    file.close();
-    uint32_t now = millis();
-    sprintf(filename, "File_%d-%d_%d-%d-%d.bin", month(),day(),hour(),minute(),second());
-    file = sd.open(filename, O_WRITE | O_CREAT | O_TRUNC);
-    /*if (!file) {
-      Serial.println("File2 open failed!"); while (1);
-    }
-    file.preAllocate(uint64_t (10*200000*4)); // pre-alloc 256 MB*/
-    uint32_t later = millis();
-    Serial.println("newfile");
-    Serial.println(later-now);
+    filestarttime = micros();
+    sprintf(filename, "File_%d-%d_%d-%d-%d_%"PRIu32".bin", month(),day(),hour(),minute(),second(), filestarttime-programstarttime);
+    oldfile=file;
+    file = nextfile;
+    uint32_t later = micros();
+    Serial.println("newfile____________________________");
+    Serial.println(later-filestarttime);
+    Serial.println("___________________________________");
 
   } 
   
