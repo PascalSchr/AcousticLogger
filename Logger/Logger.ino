@@ -54,15 +54,30 @@ char filename[100] = "";
 
 
 // ------------------------------------------
+// -- sample rate --
+const uint32_t SAMPLE_INTERVAL_US = 5;   // in us
+IntervalTimer sampleTimer;
+
+// ------------------------------------------
 // -- Buffers --
 const uint32_t SAMPLES_PER_BUFFER = 8192;
 const uint32_t BUF_BYTES = SAMPLES_PER_BUFFER * 2 * sizeof(uint16_t);
 const int dataPins[16] = {19,18,14,15,40,41,17,16,22,23,20,21,38,39,26,27};
+const uint32_t SAMPLERATE = (1*1000000/SAMPLE_INTERVAL_US);   // in Hz
+
+const uint32_t FILETIME = 60;  // in s
+const uint32_t FILESIZE = FILETIME * SAMPLERATE * (BUF_BYTES/SAMPLES_PER_BUFFER);
+
+const uint32_t N_OF_BUFFERS = round(FILESIZE / BUF_BYTES);
+const uint32_t N_OF_BUFFERS_33 = round(N_OF_BUFFERS * 0.33);
+const uint32_t N_OF_BUFFERS_67 = round(N_OF_BUFFERS * 0.67);
+
+const uint32_t TRUE_FILETIME = (N_OF_BUFFERS*SAMPLES_PER_BUFFER) / (SAMPLERATE);
+const uint32_t TRUE_FILESIZE = N_OF_BUFFERS * BUF_BYTES;
 
 
 DMAMEM uint16_t buf[2][SAMPLES_PER_BUFFER * 2];
 
-uint32_t swapTime = 0;
 
 volatile uint8_t writeBuf = 0;
 volatile uint32_t bufPos = 0;
@@ -74,26 +89,15 @@ volatile bool nextfileready=false;
 volatile bool preparefile=false;
 volatile bool closefile=false;
 
-volatile uint32_t sampleCounter    = 0;    // current sample index
 volatile uint16_t fileCounter = 0;
 
 
 
 // ------------------------------------------
 // -- stats --
-uint32_t totalSamples = 0;
-uint32_t lastStatsTime = 0;  
 uint32_t programstarttime = 0;
 uint32_t filestarttime = 0;
-uint32_t runtime = 0;
 bool one_time = false;
-uint32_t loopstart=0;
-
-// ------------------------------------------
-// -- sample rate --
-const uint32_t SAMPLE_INTERVAL_US = 5;
-
-IntervalTimer sampleTimer;
 
 
 // ------------------------------------------
@@ -138,30 +142,25 @@ void FASTRUN sampleISR() {
         bufPos     = 0;
         flushReady = true;
         writeBuf  ^= 1;
-        if (++buffcounter >=150){
+        if (++buffcounter >=N_OF_BUFFERS){
           buffcounter=0;
           changefile=true;
         }
-        if (buffcounter ==70){
+        if (buffcounter ==N_OF_BUFFERS_33){
           preparefile=true;
         }
-        if (buffcounter ==120){
+        if (buffcounter ==N_OF_BUFFERS_67){
           closefile=true;
         }
     }
 }
 
 void prepareNewFile(){
-  uint32_t now = millis();
   nextfile = sd.open("_preparationfile.bin", O_WRITE | O_CREAT | O_TRUNC);
   //nextfile.preAllocate(150*8192*4);
   nextfileready=true;
   file.rename(filename);
   Serial.println("file prepared_____________");
-  uint32_t later = millis();
-  Serial.println("_____________");
-  Serial.println(later-now);
-  Serial.println("_____________");
 }
 
 void enterRegisterMode() {
@@ -346,8 +345,12 @@ void setup(){
   }
   
   file = sd.open("_first_preparationfile.bin", O_WRITE | O_CREAT | O_TRUNC);
-  file.preAllocate(uint64_t (150*8192*4));
+  file.preAllocate(TRUE_FILESIZE);
   oldfile = sd.open("_burnfile.bin", O_WRITE | O_CREAT | O_TRUNC);
+  oldfile.close();
+  oldfile = FsFile();
+
+
   if (!file){
     Serial.println("File open failed!"); 
     while(1){            
@@ -358,10 +361,10 @@ void setup(){
     }
   }
   Serial.println("Starting...");
-  programstarttime=micros();
+  programstarttime=millis();
   sampleTimer.priority(0);          //
   sampleTimer.begin(sampleISR, SAMPLE_INTERVAL_US);   //ISR starting for polling the ADC
-  sprintf(filename, "File_%d-%d_%d-%d-%d_%"PRIu32".bin", month(),day(),hour(),minute(),second(), micros()-programstarttime);
+  sprintf(filename, "File_%d-%d_%d-%d-%d_%"PRIu32".bin", month(),day(),hour(),minute(),second(), millis()-programstarttime);
 }
 
 
@@ -370,10 +373,6 @@ void setup(){
 // -- Main Loop --
 
 void loop(){
-  if (!one_time){
-    one_time=true;
-    loopstart = micros();
-  }
   if (overrun){
     Serial.println("OVERRUN - SD write too slow!");
     overrun = false;
@@ -383,7 +382,6 @@ void loop(){
     flushReady = false;
     uint8_t readBuf = writeBuf ^ 1;
     file.write(buf[readBuf], BUF_BYTES);
-    totalSamples += SAMPLES_PER_BUFFER;
     Serial.println(buffcounter);
   }
 
@@ -393,14 +391,9 @@ void loop(){
   }
 
   if (closefile && !flushReady){
-    uint32_t now = micros();
     closefile=false;
     oldfile.close();
     Serial.println("file closed");
-    uint32_t later = micros();
-    Serial.println("_____________");
-    Serial.println(later-now);
-    Serial.println("_____________");
   }
 
 
@@ -408,11 +401,9 @@ void loop(){
   if (changefile && !flushReady) {
     changefile=false;
     fileCounter++;
-    if (fileCounter>2)  {
+    if (fileCounter>=3)  {
         Serial.println("all files full!");
         Serial.println("finished...");
-        Serial.println("time diff setup - loop:");
-        Serial.println(loopstart-programstarttime);
         file.close();
         while(1){
             digitalWrite(ledPin, HIGH);   // set the LED on
@@ -421,14 +412,12 @@ void loop(){
             delay(500);   
         }
     }
-    filestarttime = micros();
+    filestarttime = millis();
+
     sprintf(filename, "File_%d-%d_%d-%d-%d_%"PRIu32".bin", month(),day(),hour(),minute(),second(), filestarttime-programstarttime);
     oldfile=file;
     file = nextfile;
-    uint32_t later = micros();
     Serial.println("newfile____________________________");
-    Serial.println(later-filestarttime);
-    Serial.println("___________________________________");
 
   } 
   
