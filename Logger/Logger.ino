@@ -382,7 +382,7 @@ void loop(){
     flushReady = false;
     uint8_t readBuf = writeBuf ^ 1;
     file.write(buf[readBuf], BUF_BYTES);
-    Serial.println(buffcounter);
+    //Serial.println(buffcounter);
   }
 
   if (preparefile && !flushReady){
