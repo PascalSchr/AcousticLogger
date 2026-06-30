@@ -65,7 +65,7 @@ const uint32_t BUF_BYTES = SAMPLES_PER_BUFFER * 2 * sizeof(uint16_t);
 const int dataPins[16] = {19,18,14,15,40,41,17,16,22,23,20,21,38,39,26,27};
 const uint32_t SAMPLERATE = (1*1000000/SAMPLE_INTERVAL_US);   // in Hz
 
-const uint32_t FILETIME = 60;  // in s
+const uint32_t FILETIME = 600;  // in s
 const uint32_t FILESIZE = FILETIME * SAMPLERATE * (BUF_BYTES/SAMPLES_PER_BUFFER);
 
 const uint32_t N_OF_BUFFERS = round(FILESIZE / BUF_BYTES);
@@ -401,7 +401,7 @@ void loop(){
   if (changefile && !flushReady) {
     changefile=false;
     fileCounter++;
-    if (fileCounter>=3)  {
+    if (fileCounter>=2080)  {
         Serial.println("all files full!");
         Serial.println("finished...");
         file.close();
