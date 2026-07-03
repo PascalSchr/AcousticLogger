@@ -65,15 +65,18 @@ const uint32_t BUF_BYTES = SAMPLES_PER_BUFFER * 2 * sizeof(uint16_t);
 const int dataPins[16] = {19,18,14,15,40,41,17,16,22,23,20,21,38,39,26,27};
 const uint32_t SAMPLERATE = (1*1000000/SAMPLE_INTERVAL_US);   // in Hz
 
-const uint32_t FILETIME = 600;  // in s
+const uint32_t FILETIME = 180;  // in s
 const uint32_t FILESIZE = FILETIME * SAMPLERATE * (BUF_BYTES/SAMPLES_PER_BUFFER);
 
 const uint32_t N_OF_BUFFERS = round(FILESIZE / BUF_BYTES);
 const uint32_t N_OF_BUFFERS_33 = round(N_OF_BUFFERS * 0.33);
 const uint32_t N_OF_BUFFERS_67 = round(N_OF_BUFFERS * 0.67);
 
-const uint32_t TRUE_FILETIME = (N_OF_BUFFERS*SAMPLES_PER_BUFFER) / (SAMPLERATE);
+const uint32_t TRUE_FILETIME = round((N_OF_BUFFERS*SAMPLES_PER_BUFFER) / (SAMPLERATE));
 const uint32_t TRUE_FILESIZE = N_OF_BUFFERS * BUF_BYTES;
+
+const uint64_t SD_SIZE = 1000;// in GB 
+const uint32_t N_OF_FILES_LIMIT = (SD_SIZE*1000000000)/TRUE_FILESIZE - 5;
 
 
 DMAMEM uint16_t buf[2][SAMPLES_PER_BUFFER * 2];
@@ -321,6 +324,13 @@ void setup(){
   exitRegisterMode();
   delay(25);
 
+  Serial.print("True File length:");
+  Serial.println(TRUE_FILETIME);
+  Serial.print("True File size:");
+  Serial.println(TRUE_FILESIZE);
+  Serial.print("Number of files to be recorded:");
+  Serial.println(N_OF_FILES_LIMIT);
+
 
   // -- set up data bus as inputs -- 
   const int dataPins[16] = {19,18,14,15,40,41,17,16,22,23,20,21,38,39,26,27};
@@ -401,7 +411,7 @@ void loop(){
   if (changefile && !flushReady) {
     changefile=false;
     fileCounter++;
-    if (fileCounter>=2080)  {
+    if (fileCounter>=N_OF_FILES_LIMIT)  {
         Serial.println("all files full!");
         Serial.println("finished...");
         file.close();
